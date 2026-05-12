@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+requests
+websocket-client
+python-dotenv
+yfinance
+finnhub-python
+beautifulsoup4
+playwright
