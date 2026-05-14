@@ -4,6 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from routes.analysis import router as analysis_router
+from routes.auth import router as auth_router
 from routes.chat import router as chat_router
 from routes.feedback import router as feedback_router
 from routes.market import router as market_router
@@ -43,6 +44,7 @@ register_exception_handlers(app)
 
 app.include_router(market_router)
 app.include_router(analysis_router)
+app.include_router(auth_router)
 app.include_router(chat_router)
 app.include_router(zalo_router)
 app.include_router(sources_router)

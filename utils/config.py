@@ -44,6 +44,7 @@ class Settings:
     )
     hf_model: str = os.getenv("HF_MODEL", "katanemo/Arch-Router-1.5B:hf-inference")
     fireant_token: str | None = os.getenv("FIREANT_TOKEN")
+    zalo_app_secret_key: str | None = os.getenv("ZALO_APP_SECRET_KEY")
     database_url: str | None = os.getenv("DATABASE_URL")
     redis_url: str | None = os.getenv("REDIS_URL")
     chroma_persist_dir: Path = Path(os.getenv("CHROMA_PERSIST_DIR", str(BASE_DIR / "data" / "chroma")))
