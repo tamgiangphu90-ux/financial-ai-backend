@@ -4,6 +4,9 @@ from services.cafef_service import get_cafef_stock_data
 from services.finnhub_service import get_company_news
 from services.fireant_service import FireAntError, get_vietnam_stock_data
 from services.yahoo_service import get_market_summary, get_stock_quote, get_top_movers
+from intelligence.macro_reasoning import macro_snapshot
+from intelligence.market_reasoning import reason_about_market
+from intelligence.response_builder import build_api_response
 from utils.errors import ServiceError
 
 
@@ -69,3 +72,36 @@ async def market_summary():
 @router.get("/top-movers")
 async def top_movers():
     return await get_top_movers()
+
+
+@router.get("/market/trending")
+async def market_trending():
+    summary, movers = await get_market_summary(), await get_top_movers()
+    reasoning = reason_about_market(summary, movers)
+    return build_api_response(
+        summary=reasoning["summary"],
+        analysis="Market trend scan uses active Yahoo Finance data and ranks large movers by absolute percentage change.",
+        trend="neutral",
+        risk_level=reasoning["risk_level"],
+        confidence_score=reasoning["confidence_score"],
+        sources=[{"source": "Yahoo Finance", "type": "market_summary"}],
+        source_status={"Yahoo Finance": "active"},
+        related_topics=["market breadth", "momentum", "volatility"],
+        next_questions=["Chỉ số nào đang dẫn dắt thị trường?", "Mã nào biến động mạnh nhất hôm nay?"],
+    ) | {"market": reasoning}
+
+
+@router.get("/market/macro")
+async def market_macro():
+    snapshot = macro_snapshot()
+    return build_api_response(
+        summary=snapshot["summary"],
+        analysis=snapshot["warning"],
+        trend="neutral",
+        risk_level=snapshot["risk_level"],
+        confidence_score=snapshot["confidence_score"],
+        sources=[],
+        source_status={source: "placeholder" for source in snapshot["placeholder_sources"]},
+        related_topics=["GDP", "CPI", "interest rates", "FX"],
+        next_questions=["Bạn muốn xem dữ liệu vĩ mô Việt Nam hay toàn cầu?"],
+    ) | {"macro": snapshot}

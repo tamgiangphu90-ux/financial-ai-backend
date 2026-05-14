@@ -1,12 +1,12 @@
-import asyncio
 from typing import Any
 
-import requests
-
 from ai.financial_analyst import FinancialAnalyst
-from retrieval.retriever import RetrievalEngine
+from intelligence.financial_reasoner import FinancialReasoner
+from intelligence.response_builder import build_api_response
+from intelligence.response_formatter import source_names_from_retrieval, structured_no_market_data_answer
+from llm.provider import LLMProvider
+from retrieval.multi_source_retriever import MultiSourceRetriever
 from retrieval.source_verifier import verify_retrieval_bundle
-from utils.config import get_settings
 
 
 def _citations(retrieval: dict[str, Any]) -> list[dict[str, Any]]:
@@ -32,26 +32,43 @@ def _citations(retrieval: dict[str, Any]) -> list[dict[str, Any]]:
             )
     if retrieval.get("market_summary"):
         citations.append({"source": "Yahoo Finance", "type": "market_summary"})
+    if retrieval.get("top_movers"):
+        citations.append({"source": "Yahoo Finance", "type": "top_movers"})
     return [item for item in citations if item.get("source")]
 
 
 class FinancialRAGPipeline:
     def __init__(self) -> None:
-        self.retriever = RetrievalEngine()
+        self.retriever = MultiSourceRetriever()
         self.analyst = FinancialAnalyst()
+        self.reasoner = FinancialReasoner()
 
     async def run(self, message: str, symbol: str | None = None, use_llm: bool = True) -> dict[str, Any]:
         retrieval = await self.retriever.retrieve(message, symbol=symbol)
         for bundle in retrieval.get("bundles", []):
             verify_retrieval_bundle(bundle)
 
-        analysis = self.analyst.analyze_retrieval(retrieval)
+        analysis = self.reasoner.reason(retrieval)
         answer = self._deterministic_answer(message, retrieval, analysis)
-        if use_llm:
+        if use_llm and self._has_grounding_data(retrieval):
             answer = await self._grounded_llm_answer(message, retrieval, analysis, answer)
+
+        first_analysis = (analysis.get("analyses") or [{}])[0]
+        api_response = build_api_response(
+            summary=analysis.get("summary") or answer[:240],
+            analysis=first_analysis.get("reasoning") or analysis.get("summary") or answer,
+            trend=first_analysis.get("trend", "neutral"),
+            risk_level=analysis.get("risk_level", first_analysis.get("risk_level", "medium")),
+            confidence_score=analysis.get("confidence_score", retrieval.get("confidence_score", 0.0)),
+            sources=_citations(retrieval),
+            source_status=retrieval.get("source_status", {}),
+            related_topics=["momentum", "volatility", "source verification"],
+            next_questions=analysis.get("next_questions", []),
+        )
 
         return {
             "answer": answer,
+            "api_response": api_response,
             "language": retrieval.get("language"),
             "intent": retrieval.get("intent"),
             "symbols": retrieval.get("symbols", []),
@@ -60,54 +77,74 @@ class FinancialRAGPipeline:
             "citations": _citations(retrieval),
         }
 
-    def _deterministic_answer(self, message: str, retrieval: dict[str, Any], analysis: dict[str, Any]) -> str:
+    def _deterministic_answer(self, _: str, retrieval: dict[str, Any], analysis: dict[str, Any]) -> str:
         language = retrieval.get("language", "en")
+        intent = retrieval.get("intent", "analysis")
         analyses = analysis.get("analyses", [])
+        source_text = ", ".join(source_names_from_retrieval(retrieval))
 
-        if not analyses:
-            if language == "vi":
-                return (
-                    "Mình chưa xác định được mã cổ phiếu cụ thể trong câu hỏi. "
-                    "Dữ liệu thị trường tổng quan đã được truy xuất nếu có, nhưng để phân tích sâu bạn nên nêu rõ mã như VNM, FPT, AAPL hoặc NVDA."
-                )
-            return (
-                "I could not identify a specific stock symbol in your question. "
-                "I retrieved broad market context where possible, but a symbol such as AAPL, NVDA, FPT, or VNM will enable deeper analysis."
-            )
+        if not analyses or not self._has_grounding_data(retrieval):
+            return structured_no_market_data_answer(language, intent, source_text)
 
-        blocks = []
+        data_lines = []
+        analysis_lines = []
+        risk_lines = []
         for item in analyses:
             verification = item.get("verification") or {}
             discrepancies = verification.get("discrepancies") or []
+            bundle_sources = self._bundle_sources(retrieval, item.get("symbol")) or source_text
+
             if language == "vi":
                 trend_label = self._label("trend", item["trend"], language)
                 recommendation_label = self._label("recommendation", item["recommendation"], language)
                 risk_label = self._label("risk", item["risk_level"], language)
-                block = (
-                    f"{item['symbol']}: xu hướng {trend_label}, khuyến nghị {recommendation_label}, "
-                    f"rủi ro {risk_label}, giá tham chiếu {item.get('price')}. "
-                    f"Độ tin cậy nguồn: {item.get('confidence')}. {item.get('reasoning')}"
+                data_lines.append(
+                    f"- {item['symbol']}: giá tham chiếu {item.get('price')}; nguồn: {bundle_sources or 'không rõ'}; "
+                    f"độ tin cậy nguồn: {item.get('confidence')}."
                 )
+                analysis_lines.append(
+                    f"- {item['symbol']}: xu hướng {trend_label}, khuyến nghị hệ thống {recommendation_label}. "
+                    f"{item.get('reasoning')}"
+                )
+                risk_line = f"- {item['symbol']}: rủi ro {risk_label}."
                 if discrepancies:
-                    block += " Lưu ý chênh lệch nguồn: " + " ".join(
+                    risk_line += " Lưu ý chênh lệch nguồn: " + " ".join(
                         self._translate_discrepancy(text) for text in discrepancies[:2]
                     )
+                if intent == "financial_report":
+                    risk_line += " Chưa có dữ liệu báo cáo tài chính chính thức trong pipeline, nên không kết luận về doanh thu/lợi nhuận nếu nguồn không cung cấp."
+                risk_lines.append(risk_line)
             else:
-                block = (
-                    f"{item['symbol']}: trend {item['trend']}, recommendation {item['recommendation']}, "
-                    f"risk {item['risk_level']}, reference price {item.get('price')}. "
-                    f"Source confidence: {item.get('confidence')}. {item.get('reasoning')}"
+                data_lines.append(
+                    f"- {item['symbol']}: reference price {item.get('price')}; sources: {bundle_sources or 'unknown'}; "
+                    f"source confidence: {item.get('confidence')}."
                 )
+                analysis_lines.append(
+                    f"- {item['symbol']}: trend {item['trend']}, system recommendation {item['recommendation']}. "
+                    f"{item.get('reasoning')}"
+                )
+                risk_line = f"- {item['symbol']}: risk level {item['risk_level']}."
                 if discrepancies:
-                    block += " Source discrepancy note: " + " ".join(discrepancies[:2])
-            blocks.append(block)
+                    risk_line += " Source discrepancy note: " + " ".join(discrepancies[:2])
+                if intent == "financial_report":
+                    risk_line += " Official financial statement data is not available in this pipeline, so revenue/earnings claims are not inferred without a source."
+                risk_lines.append(risk_line)
 
-        disclaimer = (
-            " Đây là phân tích dữ liệu thị trường, không phải lời khuyên đầu tư cá nhân."
-            if language == "vi"
-            else " This is market analysis, not personalized investment advice."
+        if language == "vi":
+            return (
+                "Tóm tắt: Mình đã truy xuất dữ liệu trước khi phân tích và chỉ dùng các nguồn có trong kết quả truy xuất.\n\n"
+                f"Dữ liệu:\n{chr(10).join(data_lines)}\n\n"
+                f"Phân tích:\n{chr(10).join(analysis_lines)}\n\n"
+                f"Rủi ro:\n{chr(10).join(risk_lines)}\n\n"
+                "Kết luận: Đây là phân tích dữ liệu thị trường, không phải lời khuyên đầu tư cá nhân."
+            )
+        return (
+            "Summary: I retrieved data before analysis and used only sources present in the retrieval result.\n\n"
+            f"Data:\n{chr(10).join(data_lines)}\n\n"
+            f"Analysis:\n{chr(10).join(analysis_lines)}\n\n"
+            f"Risks:\n{chr(10).join(risk_lines)}\n\n"
+            "Conclusion: This is market analysis, not personalized investment advice."
         )
-        return "\n\n".join(blocks) + disclaimer
 
     def _label(self, kind: str, value: str, language: str) -> str:
         if language != "vi":
@@ -133,6 +170,26 @@ class FinancialRAGPipeline:
             .replace("by more than 2%", "hơn 2%")
         )
 
+    def _has_grounding_data(self, retrieval: dict[str, Any]) -> bool:
+        if retrieval.get("market_summary") or retrieval.get("top_movers"):
+            return True
+        return any(bundle.get("quotes") or bundle.get("news") for bundle in retrieval.get("bundles", []))
+
+    def _bundle_sources(self, retrieval: dict[str, Any], symbol: str | None) -> str:
+        sources: list[str] = []
+        for bundle in retrieval.get("bundles", []):
+            if symbol and bundle.get("symbol") != symbol:
+                continue
+            for quote in bundle.get("quotes", []):
+                source = quote.get("source")
+                if source and source not in sources:
+                    sources.append(source)
+            for item in bundle.get("news", []):
+                source = item.get("source") or "Finnhub"
+                if source and source not in sources:
+                    sources.append(source)
+        return ", ".join(sources)
+
     async def _grounded_llm_answer(
         self,
         message: str,
@@ -140,46 +197,24 @@ class FinancialRAGPipeline:
         analysis: dict[str, Any],
         fallback: str,
     ) -> str:
-        settings = get_settings()
-        if not settings.hf_token:
-            return fallback
-
         language = retrieval.get("language", "en")
-        language_rule = "Answer entirely in Vietnamese." if language == "vi" else "Answer entirely in English."
+        language_rule = (
+            "Answer entirely in Vietnamese because the user asked in Vietnamese."
+            if language == "vi"
+            else "Answer entirely in English."
+        )
         system = (
             "You are a realtime financial research copilot. Use only the supplied retrieval and analysis data. "
-            "Do not invent prices, news, sources, or forecasts. Mention source discrepancies when present. "
-            f"{language_rule} Keep the answer concise, analytical, and include a non-personal-advice caveat."
+            "Do not invent prices, news, financial statement facts, sources, forecasts, or URLs. "
+            "If data is missing, say what is missing and answer educationally from the provided framework. "
+            "Mention source names and source discrepancies when present. "
+            f"{language_rule} Structure the answer with exactly these sections: Summary, Data, Analysis, Risks, Conclusion. "
+            "Do not repeat the draft answer verbatim and do not return repeated fallback text."
         )
-        payload = {
-            "model": settings.hf_model,
-            "messages": [
-                {"role": "system", "content": system},
-                {
-                    "role": "user",
-                    "content": (
-                        f"Question: {message}\n\n"
-                        f"Verified retrieval: {retrieval}\n\n"
-                        f"Financial analysis: {analysis}\n\n"
-                        f"Draft answer: {fallback}"
-                    ),
-                },
-            ],
-            "max_tokens": 550,
-        }
-        headers = {"Authorization": f"Bearer {settings.hf_token}", "Content-Type": "application/json"}
-
-        try:
-            response = await asyncio.to_thread(
-                requests.post,
-                settings.hf_api_url,
-                headers=headers,
-                json=payload,
-                timeout=60,
-            )
-            result = response.json()
-            if response.status_code >= 400:
-                return fallback
-            return result["choices"][0]["message"]["content"].strip() or fallback
-        except Exception:
-            return fallback
+        user_prompt = (
+            f"Question: {message}\n\n"
+            f"Verified retrieval: {retrieval}\n\n"
+            f"Financial analysis: {analysis}\n\n"
+            f"Draft answer for grounding, not for copying: {fallback}"
+        )
+        return await LLMProvider().complete(system, user_prompt, fallback, max_tokens=650, temperature=0.45)

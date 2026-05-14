@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from statistics import median
 from typing import Any
 
@@ -21,6 +22,19 @@ def _as_float(value: Any) -> float | None:
 
 def _source_name(item: dict[str, Any]) -> str:
     return item.get("source") or item.get("provider") or "Unknown"
+
+
+def _is_stale(item: dict[str, Any], max_age_hours: int = 24) -> bool:
+    raw = item.get("market_time") or item.get("published_date")
+    if not raw:
+        return False
+    try:
+        parsed = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - parsed).total_seconds() > max_age_hours * 3600
 
 
 def verify_price_sources(quotes: list[dict[str, Any]]) -> dict[str, Any]:
@@ -66,11 +80,21 @@ def verify_price_sources(quotes: list[dict[str, Any]]) -> dict[str, Any]:
         confidence = min(confidence, 0.72)
         discrepancies.append("Only one price source was available, so confidence is capped.")
 
+    stale_sources = []
+    for original in quotes:
+        price = _as_float(original.get("current_price") or original.get("price"))
+        if price is not None and _is_stale(original):
+            stale_sources.append(_source_name(original))
+    if stale_sources:
+        confidence = min(confidence, 0.65)
+        discrepancies.append(f"Stale data warning for: {', '.join(stale_sources)}.")
+
     return {
         "confidence": round(confidence, 2),
         "primary_price": primary["price"],
         "primary_source": primary["source"],
         "discrepancies": discrepancies,
+        "warnings": discrepancies,
         "compared_sources": candidates,
     }
 
@@ -80,4 +104,3 @@ def verify_retrieval_bundle(bundle: dict[str, Any]) -> dict[str, Any]:
     verification = verify_price_sources(quotes)
     bundle["verification"] = verification
     return bundle
-

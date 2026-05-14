@@ -51,3 +51,19 @@ class ChatRequest(BaseModel):
     conversation_id: str = "default"
     history: list[HistoryMessage] = []
 
+
+class FeedbackRequest(BaseModel):
+    user_id: str | None = None
+    conversation_id: str | None = None
+    message_id: str | None = None
+    rating: float | None = Field(default=None, ge=0, le=5)
+    feedback_type: str | None = None
+    correction: str | None = None
+    metadata: dict[str, Any] = {}
+
+
+class WatchlistRequest(BaseModel):
+    user_id: str = Field(min_length=1, max_length=128)
+    symbol: str = Field(min_length=1, max_length=32)
+    market: str | None = None
+    notes: str | None = None

@@ -7,3 +7,11 @@ yfinance
 finnhub-python
 beautifulsoup4
 playwright
+sqlalchemy
+aiosqlite
+asyncpg
+chromadb
+apscheduler
+redis
+httpx
+pytest

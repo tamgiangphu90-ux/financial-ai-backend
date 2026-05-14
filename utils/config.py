@@ -44,6 +44,9 @@ class Settings:
     )
     hf_model: str = os.getenv("HF_MODEL", "katanemo/Arch-Router-1.5B:hf-inference")
     fireant_token: str | None = os.getenv("FIREANT_TOKEN")
+    database_url: str | None = os.getenv("DATABASE_URL")
+    redis_url: str | None = os.getenv("REDIS_URL")
+    chroma_persist_dir: Path = Path(os.getenv("CHROMA_PERSIST_DIR", str(BASE_DIR / "data" / "chroma")))
     chat_db_path: Path = Path(os.getenv("CHAT_DB_PATH", str(BASE_DIR / "chat_history.db")))
     request_timeout: int = int(os.getenv("REQUEST_TIMEOUT", "15"))
     market_news_days: int = int(os.getenv("MARKET_NEWS_DAYS", "14"))
@@ -62,4 +65,3 @@ class Settings:
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
-

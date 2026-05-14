@@ -182,6 +182,8 @@ class RetrievalEngine:
 
     def detect_intent(self, message: str) -> str:
         lower = message.lower()
+        if any(term in lower for term in ("báo cáo tài chính", "bao cao tai chinh", "bctc", "financial report", "financial statement")):
+            return "financial_report"
         if any(term in lower for term in ("top mover", "tăng mạnh", "giảm mạnh", "movers")):
             return "top_movers"
         if any(term in lower for term in ("vn-index", "vnindex", "market", "thị trường", "hôm nay")):
