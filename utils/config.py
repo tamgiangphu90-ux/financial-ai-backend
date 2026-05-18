@@ -1,4 +1,5 @@
 import os
+import logging
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -6,6 +7,12 @@ from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 PROJECT_DIR = BASE_DIR.parent
+logger = logging.getLogger(__name__)
+ZALO_SECRET_ENV_NAMES = (
+    "ZALO_APP_SECRET_KEY",
+    "ZALO_APP_SECRET",
+    "ZALO_SECRET_KEY",
+)
 
 
 def _load_env_file(path: Path) -> None:
@@ -31,6 +38,17 @@ except ModuleNotFoundError:
     _load_env_file(BASE_DIR / ".env")
 
 
+def _first_available_env(names: tuple[str, ...]) -> tuple[str | None, str | None]:
+    for name in names:
+        value = os.getenv(name)
+        if value:
+            return value, name
+    return None, None
+
+
+ZALO_APP_SECRET_KEY, ZALO_APP_SECRET_ENV_NAME = _first_available_env(ZALO_SECRET_ENV_NAMES)
+
+
 @dataclass(frozen=True)
 class Settings:
     app_name: str = "Financial AI Backend"
@@ -44,7 +62,8 @@ class Settings:
     )
     hf_model: str = os.getenv("HF_MODEL", "katanemo/Arch-Router-1.5B:hf-inference")
     fireant_token: str | None = os.getenv("FIREANT_TOKEN")
-    zalo_app_secret_key: str | None = os.getenv("ZALO_APP_SECRET_KEY")
+    zalo_app_secret_key: str | None = ZALO_APP_SECRET_KEY
+    zalo_app_secret_env_name: str | None = ZALO_APP_SECRET_ENV_NAME
     database_url: str | None = os.getenv("DATABASE_URL")
     redis_url: str | None = os.getenv("REDIS_URL")
     chroma_persist_dir: Path = Path(os.getenv("CHROMA_PERSIST_DIR", str(BASE_DIR / "data" / "chroma")))
@@ -65,4 +84,9 @@ class Settings:
 
 @lru_cache
 def get_settings() -> Settings:
-    return Settings()
+    settings = Settings()
+    if settings.zalo_app_secret_env_name:
+        logger.info("Zalo authentication secret configured from %s", settings.zalo_app_secret_env_name)
+    else:
+        logger.warning("Zalo authentication secret is not configured")
+    return settings
