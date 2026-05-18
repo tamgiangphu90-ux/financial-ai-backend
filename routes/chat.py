@@ -1,7 +1,10 @@
+import logging
+
 from fastapi import APIRouter
 
 from models.schemas import ChatRequest
 from services.chat_service import (
+    build_safe_chat_response,
     clear_chat_messages,
     generate_chat_reply,
     init_db,
@@ -10,6 +13,7 @@ from services.chat_service import (
 
 
 router = APIRouter(tags=["chat"])
+logger = logging.getLogger(__name__)
 
 
 @router.on_event("startup")
@@ -30,11 +34,20 @@ async def delete_chat_history(conversation_id: str):
 
 @router.post("/chat")
 async def chat(request: ChatRequest):
-    message = request.message.strip()
-    conversation_id = request.conversation_id.strip() or "default"
-    if not message:
-        from utils.errors import ServiceError
-
-        raise ServiceError("Message is required", status_code=400, code="empty_message")
-    return await generate_chat_reply(message, conversation_id, request.history)
-
+    try:
+        message = request.message.strip()
+        conversation_id = request.conversation_id.strip() or "default"
+        if not message:
+            logger.warning("Empty /chat message for conversation_id=%s", conversation_id)
+            return build_safe_chat_response(
+                conversation_id=conversation_id,
+                error="empty_message",
+            )
+        return await generate_chat_reply(message, conversation_id, request.history)
+    except Exception:
+        logger.exception("Chat pipeline failed for POST /chat")
+        conversation_id = (request.conversation_id or "default").strip() or "default"
+        return build_safe_chat_response(
+            conversation_id=conversation_id,
+            error="chat_pipeline_error",
+        )

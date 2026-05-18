@@ -27,7 +27,11 @@ async def get_market_index_context(message: str) -> dict[str, Any]:
             else:
                 logger.warning("Market index quote failed: %s", result)
     else:
-        summary = await get_market_summary()
+        try:
+            summary = await get_market_summary()
+        except Exception as exc:
+            logger.exception("Market summary source failed: %s", exc)
+            summary = {}
         quotes = [item for item in summary.get("indices", []) if isinstance(item, dict)]
 
     market_data = [quote_to_market_card(quote) for quote in quotes]
